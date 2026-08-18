@@ -116,7 +116,7 @@ if st.button("Bắt đầu kiểm tra"):
                 else: st.error(f"Lỗi: {imgs.get('ofac_err')}")
             with col2:
                 st.subheader("🌐 OpenSanctions Result")
-                     if 'os' in imgs: st.image("os.png")
+                if 'os' in imgs: st.image("os.png")
                 else: st.error(f"Lỗi: {imgs.get('os_err')}")
     else:
         st.warning("Vui lòng nhập đủ Tên tàu và IMO!")
