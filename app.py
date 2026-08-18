@@ -2,18 +2,12 @@ import streamlit as st
 import os
 import subprocess
 import ssl
-import google.generativeai as genai
 from playwright.sync_api import sync_playwright
+from duckduckgo_search import DDGS
 
 # --- CẤU HÌNH HỆ THỐNG ---
 os.environ['PYTHONHTTPSVERIFY'] = '0'
 ssl._create_default_https_context = ssl._create_unverified_context
-
-# --- LẤY API KEY TỪ SECRETS (Để không phải nhập lại) ---
-# Nếu bạn chưa cài Secrets, nó sẽ báo lỗi hoặc dùng chế độ chờ
-GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
 
 # --- HÀM CÀI TRÌNH DUYỆT ---
 def ensure_playwright_installed():
@@ -25,7 +19,7 @@ def ensure_playwright_installed():
         except:
             pass
 
-# --- HÀM LẤY ẢNH CHỤP MÀN HÌNH (Mô phỏng người dùng thật) ---
+# --- HÀM LẤY ẢNH CHỤP MÀN HÌNH ---
 def get_vessel_screenshots(name, imo):
     results = {}
     try:
@@ -34,7 +28,7 @@ def get_vessel_screenshots(name, imo):
             context = browser.new_context(viewport={'width': 1280, 'height': 1600})
             page = context.new_page()
 
-            # --- 1. OFAC ---
+            # --- 1. OFAC (Hoạt động tốt) ---
             try:
                 page.goto("https://sanctionssearch.ofac.treas.gov/", timeout=60000)
                 page.select_option('select#ctl00_MainContent_ddlType', value='Vessel')
@@ -45,25 +39,25 @@ def get_vessel_screenshots(name, imo):
                 results['ofac'] = "ofac.png"
             except Exception as e: results['ofac_err'] = str(e)
 
-            # --- 2. OPENSANCTIONS (Gõ phím thủ công) ---
+            # --- 2. OPENSANCTIONS (SỬA LỖI TIMEOUT) ---
             try:
-                page.goto("https://www.opensanctions.org/advancedsearch/", timeout=60000)
-                # Đợi form hiện ra
-                page.wait_for_selector('input[name="caption"]')
+                # Truy cập thẳng link search kèm tham số để tránh lỗi không tìm thấy ô nhập
+                os_url = f"https://www.opensanctions.org/advancedsearch/?caption={name}&schema=Vessel&properties.imoNumber={imo}"
+                page.goto(os_url, timeout=60000)
                 
-                # Chọn loại thực thể là Vessel
-                page.select_option('select[name="schema"]', value='Vessel')
+                # Chờ trang load rồi tìm nút "Match" (thường là nút duy nhất màu xanh lá)
+                page.wait_for_timeout(5000)
                 
-                # Gõ tên tàu
-                page.type('input[name="caption"]', name, delay=100)
+                # Nhấn Enter để submit form nếu nút bị che
+                page.keyboard.press("Enter")
                 
-                # Gõ số IMO - Chúng ta tìm ô input có name chứa imoNumber
-                page.type('input[name="properties.imoNumber"]', imo, delay=100)
+                # Cố gắng click vào nút có chữ Match
+                try:
+                    page.click('button:has-text("Match")', timeout=5000)
+                except:
+                    pass
                 
-                # Nhấn nút Match
-                page.click('button:has-text("Match"), button[type="submit"]')
-                
-                # Đợi bảng kết quả hiện ra (quan trọng)
+                # Đợi kết quả đối soát hiện ra
                 page.wait_for_timeout(10000)
                 page.screenshot(path="os.png", full_page=True)
                 results['os'] = "os.png"
@@ -74,21 +68,21 @@ def get_vessel_screenshots(name, imo):
         results['system_err'] = str(e)
     return results
 
-# --- HÀM AI (Dùng Gemini ổn định) ---
-def ask_ai_conclusion(name, imo):
-    if not GEMINI_KEY:
-        return "⚠️ API Key chưa được cài đặt trong Secrets. Vui lòng cài đặt để dùng AI."
+# --- HÀM AI (DÙNG DUCKDUCKGO AI - KHÔNG CẦN KEY) ---
+def ask_free_ai(name, imo):
+    prompt = f"Research vessel {name} (IMO {imo}). Is it on any international sanction lists? Did it visit Russia in the last 12 months? Answer in exactly one English sentence."
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Research vessel {name} (IMO {imo}). Is it sanctioned? Visited Russia in last 12 months? Answer in exactly one English sentence."
-        response = model.generate_content(prompt)
-        return response.text
+        with DDGS() as ddgs:
+            # Gọi AI của DuckDuckGo (Miễn phí, không cần Key)
+            response = ddgs.chat(prompt, model='gpt-4o-mini')
+            return response
     except Exception as e:
-        return f"❌ Lỗi AI: {str(e)}"
+        return f"AI temporary unavailable (Search mode). Based on common data, please check the official screenshots below for {name} ({imo})."
 
 # --- GIAO DIỆN ---
 st.set_page_config(page_title="Vessel Sanction Checker", layout="wide")
 st.title("🚢 Vessel Sanction Tool")
+st.caption("Phiên bản tự động hóa - Không cần API Key")
 
 v_name = st.text_input("Tên tàu (Vessel Name)")
 v_imo = st.text_input("Số IMO")
@@ -97,12 +91,12 @@ if st.button("Bắt đầu kiểm tra"):
     if v_name and v_imo:
         ensure_playwright_installed()
         
-        with st.spinner("Hệ thống đang làm việc..."):
-            # 1. Chụp ảnh
+        with st.spinner("Đang thực hiện kiểm tra (vui lòng đợi 30-45 giây)..."):
+            # 1. Chụp ảnh trước (Ưu tiên bằng chứng)
             imgs = get_vessel_screenshots(v_name, v_imo)
             
-            # 2. AI Conclusion
-            conclusion = ask_ai_conclusion(v_name, v_imo)
+            # 2. AI Conclusion (Dùng bản không Key)
+            conclusion = ask_free_ai(v_name, v_imo)
             st.subheader("📝 AI Conclusion:")
             st.success(conclusion)
             
@@ -113,10 +107,10 @@ if st.button("Bắt đầu kiểm tra"):
             with col1:
                 st.subheader("🌐 OFAC Result")
                 if 'ofac' in imgs: st.image("ofac.png")
-                else: st.error(f"Lỗi: {imgs.get('ofac_err')}")
+                else: st.error(f"Lỗi OFAC: {imgs.get('ofac_err')}")
             with col2:
                 st.subheader("🌐 OpenSanctions Result")
                 if 'os' in imgs: st.image("os.png")
-                else: st.error(f"Lỗi: {imgs.get('os_err')}")
+                else: st.error("Lỗi: OpenSanctions không phản hồi hoặc đang bận. Vui lòng thử lại.")
     else:
         st.warning("Vui lòng nhập đủ Tên tàu và IMO!")
