@@ -2,13 +2,19 @@ import streamlit as st
 import os
 import subprocess
 import requests
-import google.generativeai as genai
+from openai import OpenAI
 from playwright.sync_api import sync_playwright
 import ssl
 
 # --- CẤU HÌNH HỆ THỐNG ---
 os.environ['PYTHONHTTPSVERIFY'] = '0'
 ssl._create_default_https_context = ssl._create_unverified_context
+
+# --- ĐIỀN API KEY CHATGPT TẠI ĐÂY (Mã bắt đầu bằng sk-...) ---
+OPENAI_API_KEY = "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"
+
+# Khởi tạo OpenAI Client
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # --- HÀM TỰ CÀI TRÌNH DUYỆT ---
 @st.cache_resource
@@ -23,124 +29,98 @@ def get_vessel_screenshots(name, imo):
     results = {}
     try:
         with sync_playwright() as p:
-            # Tham số args bắt buộc để chạy trên Cloud Linux
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            context = browser.new_context(viewport={'width': 1280, 'height': 1400})
+            context = browser.new_context(viewport={'width': 1280, 'height': 1600})
             page = context.new_page()
 
-            # --- 1. QUY TRÌNH OFAC ---
+            # --- 1. THAO TÁC OFAC ---
             try:
-                st.write("🛰️ Đang thao tác trên trang OFAC...")
                 page.goto("https://sanctionssearch.ofac.treas.gov/", timeout=60000)
                 page.select_option('select#ctl00_MainContent_ddlType', value='Vessel')
                 page.fill('input#ctl00_MainContent_txtID', imo)
                 page.click('input#ctl00_MainContent_btnSearch')
-                # Đợi bảng kết quả hiện lên
-                page.wait_for_timeout(7000)
-                page.screenshot(path="ofac_web.png", full_page=True)
-                results['ofac'] = "ofac_web.png"
-            except Exception as e: 
-                results['ofac_err'] = f"Lỗi OFAC: {str(e)}"
+                page.wait_for_timeout(6000) # Đợi kết quả
+                page.screenshot(path="ofac.png", full_page=True)
+                results['ofac'] = "ofac.png"
+            except Exception as e: results['ofac_err'] = f"OFAC Error: {e}"
 
-            # --- 2. QUY TRÌNH OPENSANCTIONS (Điền và Click Match) ---
+            # --- 2. THAO TÁC OPENSANCTIONS (ẤN MATCH/SEARCH) ---
             try:
-                st.write("🛰️ Đang thao tác trên trang OpenSanctions...")
-                # Truy cập thẳng trang advanced search
-                page.goto("https://www.opensanctions.org/advancedsearch/", timeout=60000)
+                # Dùng URL chứa sẵn thông tin để điền nhanh
+                os_url = f"https://www.opensanctions.org/advancedsearch/?caption={name}&schema=Vessel&properties.imoNumber={imo}"
+                page.goto(os_url, timeout=60000)
                 
-                # Chọn Schema là Vessel
-                page.select_option('select[name="schema"]', value='Vessel')
-                # Điền tên tàu
-                page.fill('input[name="caption"]', name)
-                # Điền số IMO (Tìm ô nhập có chứa từ khóa imo)
-                # OpenSanctions dùng cấu trúc động, điền qua URL là chắc chắn nhất sau đó click
-                os_fill_url = f"https://www.opensanctions.org/advancedsearch/?caption={name}&schema=Vessel&properties.imoNumber={imo}"
-                page.goto(os_fill_url)
+                # Tìm và nhấn nút Search/Submit để kích hoạt Match dữ liệu
+                # Thử nhấn Enter trước
+                page.keyboard.press("Enter")
+                # Sau đó tìm nút có chữ Search hoặc type submit để click cho chắc chắn
+                try:
+                    page.click('button[type="submit"]', timeout=5000)
+                except:
+                    pass
                 
-                # QUAN TRỌNG: Nhấn nút Search/Match để kích hoạt kết quả
-                # Tìm nút Submit của form
-                page.keyboard.press("Enter") 
-                page.click('button[type="submit"]')
-                
-                # Đợi cho đến khi danh sách kết quả (hoặc thông báo không tìm thấy) hiện ra
-                page.wait_for_timeout(8000) 
-                
-                # Chụp toàn bộ trang kết quả
-                page.screenshot(path="os_web.png", full_page=True)
-                results['os'] = "os_web.png"
-            except Exception as e: 
-                results['os_err'] = f"Lỗi OpenSanctions: {str(e)}"
+                # Đợi trang web xử lý dữ liệu Matching
+                page.wait_for_timeout(8000)
+                page.screenshot(path="os.png", full_page=True)
+                results['os'] = "os.png"
+            except Exception as e: results['os_err'] = f"OpenSanctions Error: {e}"
 
             browser.close()
     except Exception as e:
-        st.error(f"Lỗi hệ thống trình duyệt: {e}")
+        st.error(f"Browser Error: {e}")
     return results
 
-# --- HÀM HỎI AI (Hỗ trợ cả mã AQ. và AIzaSy) ---
-def ask_gemini_hybrid(name, imo, key):
-    if not key:
-        return "⚠️ Vui lòng nhập API Key hoặc Token ở cột bên trái."
-    
-    prompt = f"Research vessel {name} (IMO {imo}). Is it sanctioned? Visited Russia in last 12 months? Answer 1 English sentence."
-    
-    # Dùng phương thức POST trực tiếp để chấp nhận cả Token tạm thời (AQ.)
-    if key.startswith("AQ."):
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            if response.status_code == 200:
-                return response.json()['candidates'][0]['content']['parts'][0]['text']
-            return f"❌ Token AQ. đã hết hạn (Lỗi {response.status_code})."
-        except: return "❌ Không thể kết nối AI."
+# --- HÀM HỎI CHATGPT (OpenAI) ---
+def ask_chatgpt(name, imo):
+    try:
+        prompt = f"""
+        Research the vessel '{name}' with IMO number '{imo}'.
+        1. Check if this vessel is on any international sanction lists (UN, US, EU, UK).
+        2. Check if this vessel has visited any Russian ports or territory in the last 12 months.
+        Provide a final conclusion in exactly one English sentence.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o", # Hoặc dùng "gpt-3.5-turbo" nếu muốn tiết kiệm
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"ChatGPT Error: {str(e)}"
 
-    elif key.startswith("AIza"):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        try:
-            response = requests.post(url, json=payload, timeout=20)
-            if response.status_code == 200:
-                return response.json()['candidates'][0]['content']['parts'][0]['text']
-            return f"❌ API Key sai (Lỗi {response.status_code})."
-        except: return "❌ Lỗi kết nối AI."
-    
-    return "⚠️ Định dạng mã không đúng (Phải là AQ. hoặc AIzaSy)."
-
-# --- GIAO DIỆN STREAMLIT ---
+# --- GIAO DIỆN CHÍNH ---
 st.set_page_config(page_title="Vessel Sanction Checker", layout="wide")
-st.title("🚢 Vessel Sanction Tool")
+st.title("🚢 Vessel Sanction Checker (ChatGPT Edition)")
 
-with st.sidebar:
-    st.header("Nhập liệu")
-    user_key = st.text_input("Nhập Gemini API Key / Token", type="password")
-    v_name = st.text_input("Tên tàu (Vessel Name)")
-    v_imo = st.text_input("Số IMO")
-    btn_check = st.button("Bắt đầu kiểm tra")
+v_name = st.text_input("Tên tàu (Vessel Name)")
+v_imo = st.text_input("Số IMO")
 
-if btn_check:
+if st.button("Bắt đầu kiểm tra"):
     if v_name and v_imo:
         install_playwright()
         
-        # 1. AI Conclusion
-        st.subheader("📝 AI Conclusion:")
-        with st.spinner("AI đang tra cứu..."):
-            ai_info = ask_gemini_hybrid(v_name, v_imo, user_key)
-            st.success(ai_info) if "❌" not in ai_info else st.error(ai_info)
+        # 1. Hiển thị Kết luận AI trước
+        st.subheader("📝 AI Conclusion (ChatGPT):")
+        with st.spinner("ChatGPT đang phân tích dữ liệu..."):
+            conclusion = ask_chatgpt(v_name, v_imo)
+            st.success(conclusion)
         
         st.divider()
         
-        # 2. Screenshots
-        with st.spinner("Đang chụp ảnh thực tế từ các website..."):
+        # 2. Hiển thị Screenshots
+        with st.spinner("Hệ thống đang chụp ảnh bằng chứng thực tế..."):
             imgs = get_vessel_screenshots(v_name, v_imo)
             col1, col2 = st.columns(2)
+            
             with col1:
-                st.subheader("🌐 OFAC Result")
+                st.subheader("🌐 OFAC Source")
                 if 'ofac' in imgs: st.image(imgs['ofac'], use_container_width=True)
                 else: st.error(imgs.get('ofac_err'))
+                
             with col2:
-                st.subheader("🌐 OpenSanctions Result")
+                st.subheader("🌐 OpenSanctions Source")
                 if 'os' in imgs: st.image(imgs['os'], use_container_width=True)
                 else: st.error(imgs.get('os_err'))
     else:
-        st.sidebar.error("Vui lòng nhập đủ thông tin!")
+        st.warning("Vui lòng điền đủ Tên tàu và mã IMO!")
