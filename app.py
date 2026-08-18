@@ -1,90 +1,89 @@
 import streamlit as st
 import os
 import subprocess
-from duckduckgo_search import DDGS
-from playwright.sync_api import sync_playwright
 import ssl
+from playwright.sync_api import sync_playwright
+from duckduckgo_search import DDGS
 
 # --- CẤU HÌNH HỆ THỐNG ---
 os.environ['PYTHONHTTPSVERIFY'] = '0'
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# --- HÀM TỰ CÀI TRÌNH DUYỆT ---
-@st.cache_resource
-def install_playwright():
-    try:
-        subprocess.run(["python", "-m", "playwright", "install", "chromium"], check=True)
-    except:
-        os.system("python -m playwright install chromium")
+# --- HÀM CÀI TRÌNH DUYỆT (ÉP BUỘC) ---
+def ensure_playwright_installed():
+    # Kiểm tra xem trình duyệt đã tồn tại chưa, nếu chưa thì cài
+    # Lệnh này sẽ chạy mỗi khi app khởi động để đảm bảo trình duyệt luôn sẵn sàng
+    if 'playwright_ready' not in st.session_state:
+        try:
+            # Cài đặt chromium và các thành phần liên quan
+            subprocess.run(["playwright", "install", "chromium"], check=True)
+            # Ép buộc cài đặt các thành phần Linux cần thiết
+            subprocess.run(["playwright", "install-deps"], check=True)
+            st.session_state['playwright_ready'] = True
+        except Exception as e:
+            st.error(f"Lỗi khởi tạo trình duyệt: {e}")
 
 # --- HÀM LẤY ẢNH CHỤP MÀN HÌNH ---
 def get_vessel_screenshots(name, imo):
     results = {}
     try:
         with sync_playwright() as p:
-            # Khởi chạy trình duyệt
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            # Khởi chạy trình duyệt với chế độ chống lỗi trên Cloud
+            browser = p.chromium.launch(
+                headless=True, 
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
             context = browser.new_context(viewport={'width': 1280, 'height': 1600})
             page = context.new_page()
 
-            # --- 1. THAO TÁC OFAC ---
+            # --- 1. OFAC ---
             try:
-                st.write("🔄 Đang kiểm tra OFAC...")
                 page.goto("https://sanctionssearch.ofac.treas.gov/", timeout=60000)
                 page.select_option('select#ctl00_MainContent_ddlType', value='Vessel')
                 page.fill('input#ctl00_MainContent_txtID', imo)
                 page.click('input#ctl00_MainContent_btnSearch')
-                page.wait_for_timeout(6000)
+                page.wait_for_timeout(8000) # Đợi web xử lý
                 page.screenshot(path="ofac.png", full_page=True)
                 results['ofac'] = "ofac.png"
-            except Exception as e: results['ofac_err'] = f"OFAC Error: {e}"
+            except Exception as e: results['ofac_err'] = str(e)
 
-            # --- 2. THAO TÁC OPENSANCTIONS (ẤN MATCH) ---
+            # --- 2. OPENSANCTIONS (ẤN MATCH) ---
             try:
-                st.write("🔄 Đang đối soát OpenSanctions (Match)...")
-                # Truy cập link có sẵn dữ liệu điền vào ô
                 os_url = f"https://www.opensanctions.org/advancedsearch/?caption={name}&schema=Vessel&properties.imoNumber={imo}"
                 page.goto(os_url, timeout=60000)
                 
-                # Đợi nút Match (nút submit) hiện ra và nhấn vào
-                page.wait_for_selector('button[type="submit"]')
-                page.click('button[type="submit"]')
+                # Tìm và nhấn nút Match/Search
+                # Chúng ta nhấn nút có thuộc tính type="submit"
+                try:
+                    page.wait_for_selector('button[type="submit"]', timeout=10000)
+                    page.click('button[type="submit"]')
+                except:
+                    page.keyboard.press("Enter")
                 
-                # CHỜ ĐỢI KẾT QUẢ HIỆN RA (Đây là phần bạn cần)
-                # Đợi 8 giây để hệ thống tính toán điểm Match
-                page.wait_for_timeout(8000)
-                
-                # Chụp ảnh sau khi đã có kết quả
+                # Đợi kết quả hiển thị (Tăng thời gian chờ lên 10 giây)
+                page.wait_for_timeout(10000)
                 page.screenshot(path="os.png", full_page=True)
                 results['os'] = "os.png"
-            except Exception as e: results['os_err'] = f"OpenSanctions Error: {e}"
+            except Exception as e: results['os_err'] = str(e)
 
             browser.close()
     except Exception as e:
-        st.error(f"Lỗi trình duyệt: {e}")
+        results['system_err'] = str(e)
     return results
 
-# --- HÀM HỎI AI MIỄN PHÍ ---
-def ask_free_ai(name, imo):
-    prompt = f"Act as a maritime expert. Research vessel {name} (IMO {imo}). Is it sanctioned? Visited Russia in last 12 months? Answer in exactly one English sentence."
+# --- HÀM AI MIỄN PHÍ ---
+def ask_ai_conclusion(name, imo):
+    prompt = f"As a maritime expert, check if vessel {name} (IMO {imo}) is sanctioned or visited Russia in the last 12 months. Answer in exactly one English sentence."
     try:
-        # Cách gọi mới nhất của thư viện DDGS
         with DDGS() as ddgs:
-            response = ddgs.chat(prompt, model='gpt-4o-mini')
-            return response
-    except Exception as e:
-        # Nếu chat lỗi, thử dùng tìm kiếm văn bản thông thường làm dự phòng
-        try:
-            with DDGS() as ddgs:
-                search_results = list(ddgs.text(f"vessel {name} IMO {imo} sanctions Russia", max_results=1))
-                if search_results:
-                    return f"AI Conclusion (Search-based): {search_results[0]['body'][:200]}..."
-        except:
-            pass
-        return "AI temporary unavailable. Please verify manually via the screenshots below."
+            # Sử dụng phương thức chat mới nhất
+            results = ddgs.chat(prompt, model='gpt-4o-mini')
+            return results
+    except:
+        return "AI temporary unavailable. Please check the screenshots below for manual verification."
 
 # --- GIAO DIỆN CHÍNH ---
-st.set_page_config(page_title="Vessel Sanction Tool", layout="wide")
+st.set_page_config(page_title="Vessel Sanction Checker", layout="wide")
 st.title("🚢 Vessel Sanction Tool")
 
 v_name = st.text_input("Tên tàu (Vessel Name)")
@@ -92,29 +91,34 @@ v_imo = st.text_input("Số IMO")
 
 if st.button("Bắt đầu kiểm tra"):
     if v_name and v_imo:
-        install_playwright()
+        # Cài đặt trình duyệt ngay khi nhấn nút
+        with st.spinner("Đang chuẩn bị trình duyệt hệ thống..."):
+            ensure_playwright_installed()
         
         # 1. AI Conclusion
         st.subheader("📝 AI Conclusion:")
-        with st.spinner("Đang phân tích dữ liệu..."):
-            conclusion = ask_free_ai(v_name, v_imo)
+        with st.spinner("AI đang phân tích..."):
+            conclusion = ask_ai_conclusion(v_name, v_imo)
             st.success(conclusion)
         
         st.divider()
         
         # 2. Screenshots
-        with st.spinner("Hệ thống đang chụp ảnh bằng chứng..."):
+        with st.spinner("Đang chụp ảnh thực tế..."):
             imgs = get_vessel_screenshots(v_name, v_imo)
-            col1, col2 = st.columns(2)
             
+            if 'system_err' in imgs:
+                st.error(f"Lỗi hệ thống trình duyệt: {imgs['system_err']}")
+                st.info("Mẹo: Hãy nhấn 'Reboot App' trong menu Manage App nếu lỗi này lặp lại.")
+            
+            col1, col2 = st.columns(2)
             with col1:
-                st.subheader("🌐 OFAC Source")
-                if 'ofac' in imgs: st.image("ofac.png", use_container_width=True)
-                else: st.error(imgs.get('ofac_err'))
-                
+                st.subheader("🌐 OFAC Result")
+                if 'ofac' in imgs: st.image("ofac.png")
+                else: st.error(f"Lỗi OFAC: {imgs.get('ofac_err')}")
             with col2:
-                st.subheader("🌐 OpenSanctions Source")
-                if 'os' in imgs: st.image("os.png", use_container_width=True)
-                else: st.error(imgs.get('os_err'))
+                st.subheader("🌐 OpenSanctions Result")
+                if 'os' in imgs: st.image("os.png")
+                else: st.error(f"Lỗi OpenSanctions: {imgs.get('os_err')}")
     else:
         st.warning("Vui lòng nhập đủ Tên tàu và IMO!")
