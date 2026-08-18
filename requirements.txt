@@ -1,4 +1,4 @@
 streamlit
 playwright
-duckduckgo_search==6.2.13
+duckduckgo_search
 Pillow
