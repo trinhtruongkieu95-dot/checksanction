@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 
 # --- 1. CẤU HÌNH AI ---
 # DÁN MÃ API CỦA BẠN VÀO ĐÂY
-GEMINI_API_KEY = "DÁN_MÃ_API_CỦA_BẠN_VÀO_ĐÂY" 
+GEMINI_API_KEY = "AQ.Ab8RN6JVNRldaH4hz2ECZeyWfptwIkdws7eh-_Ijdo575yI96A" 
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- 2. HÀM CÀI TRÌNH DUYỆT (Chạy ngay khi khởi động) ---
