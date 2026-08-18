@@ -1,4 +1,9 @@
-import streamlit as st
+import ssl
+import os
+
+# Bỏ qua kiểm tra chứng chỉ SSL để tránh lỗi kết nối trên Cloud
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+ssl._create_default_https_context = ssl._create_unverified_contextimport streamlit as st
 import os
 import subprocess
 import google.generativeai as genai
@@ -6,7 +11,7 @@ from playwright.sync_api import sync_playwright
 
 # --- 1. CẤU HÌNH AI ---
 # DÁN MÃ API CỦA BẠN VÀO ĐÂY
-GEMINI_API_KEY = "AQ.Ab8RN6JVNRldaH4hz2ECZeyWfptwIkdws7eh-_Ijdo575yI96A" 
+GEMINI_API_KEY = "AQ.Ab8RN6JVNRldaH4hz2ECZeyWfptwIkdws7eh-_Ijdo575yI96A"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- 2. HÀM CÀI TRÌNH DUYỆT (Chạy ngay khi khởi động) ---
@@ -66,12 +71,34 @@ def get_vessel_images(name, imo):
 # --- 4. HÀM AI ---
 def ask_gemini(name, imo):
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Research vessel {name} (IMO {imo}). Is it sanctioned? Visited Russia in last 12 months? Answer 1 English sentence."
+        # Sử dụng model có hỗ trợ tra cứu internet (Grounding)
+        # Lưu ý: 'gemini-1.5-flash' hoặc 'gemini-1.5-pro' đều hỗ trợ
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-flash',
+            tools=[{"google_search_retrieval": {}}] # Kích hoạt khả năng tra cứu Google
+        )
+        
+        prompt = f"""
+        Search for recent news and AIS tracking data for the vessel '{name}' (IMO {imo}).
+        Answer these 2 points clearly:
+        1. Is this vessel currently on any international sanction lists (OFAC, EU, UN, etc.)?
+        2. Based on tracking data, has this vessel visited any Russian ports or entered Russian territorial waters in the last 12 months?
+        
+        Conclusion: Provide a final answer in exactly one English sentence covering both points.
+        """
+        
+        # Gọi AI và cho phép nó sử dụng công cụ tìm kiếm
         response = model.generate_content(prompt)
-        return response.text
-    except:
-        return "AI connection failed. Please check screenshots below."
+        
+        # Nếu AI trả về kết quả
+        if response.text:
+            return response.text
+        else:
+            return "AI returned an empty response. Please check your API Key limits."
+            
+    except Exception as e:
+        # In ra lỗi cụ thể để bạn dễ debug nếu vẫn lỗi
+        return f"AI Error: {str(e)}"
 
 # --- GIAO DIỆN ---
 st.set_page_config(page_title="Vessel Tool", layout="wide")
