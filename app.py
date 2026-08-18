@@ -1,17 +1,16 @@
-import ssl
-import os
-
-# Bỏ qua kiểm tra chứng chỉ SSL để tránh lỗi kết nối trên Cloud
-os.environ['PYTHONHTTPSVERIFY'] = '0'
-ssl._create_default_https_context = ssl._create_unverified_contextimport streamlit as st
+import streamlit as st
 import os
 import subprocess
 import google.generativeai as genai
 from playwright.sync_api import sync_playwright
+import ssl
 
-# --- 1. CẤU HÌNH AI ---
-# DÁN MÃ API CỦA BẠN VÀO ĐÂY
-GEMINI_API_KEY = "AQ.Ab8RN6JVNRldaH4hz2ECZeyWfptwIkdws7eh-_Ijdo575yI96A"
+# Vượt rào bảo mật cho máy chủ Cloud (Mỗi lệnh 1 dòng riêng)
+os.environ['PYTHONHTTPSVERIFY'] = '0'
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# Cấu hình AI
+GEMINI_API_KEY = "AQ.Ab8RN6JVNRldaH4hz2ECZeyWfptwIkdws7eh-_Ijdo575yI96A" 
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- 2. HÀM CÀI TRÌNH DUYỆT (Chạy ngay khi khởi động) ---
