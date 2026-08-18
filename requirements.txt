@@ -1,4 +1,4 @@
 streamlit
 playwright
-google-generativeai
+duckduckgo_search
 Pillow
